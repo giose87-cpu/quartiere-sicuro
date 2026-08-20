@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="it" class="h-full bg-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CdV - Controllo di Vicinato</title>
+    
+    <!-- Configurazione PWA Schermo Intero per Android e iOS -->
+    <meta name="theme-color" content="#dc2626">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="CdV Sicurezza">
+
+    <!-- File Manifest e Service Worker -->
+    <link rel="manifest" href="manifest.json">
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js');
+      }
+    </script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome per le icone -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js" type="module"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js" type="module"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js" type="module"></script>
+    
+    <style>
+        @keyframes pulse-red {
+            0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            50% { transform: scale(1.05); box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
+        }
+        .pulse-btn { animation: pulse-red 2s infinite; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .tab-content { transition: opacity 0.2s ease-in-out; }
+    </style>
+</head>
+<body class="h-full flex justify-center items-center bg-slate-900 overflow-hidden font-sans">
+
+    <!-- Cornice Smartphone (simulatore desktop, su mobile diventa full screen) -->
+    <div class="w-full max-w-md h-full md:h-[840px] md:rounded-[40px] md:border-[12px] md:border-slate-800 bg-slate-50 flex flex-col relative overflow-hidden shadow-2xl">
+        
+        <!-- Barra di Stato Virtuale (Stile iOS/Android) -->
+        <div class="bg-slate-900 text-white text-xs px-6 py-2 flex justify-between items-center z-50 select-none">
+            <span id="virtual-clock" class="font-semibold">12:00</span>
+            <div class="flex items-center space-x-2">
+                <i class="fas fa-signal"></i>
+                <i class="fas fa-wifi"></i>
+                <i class="fas fa-battery-three-quarters"></i>
+            </div>
+        </div>
+
+        <!-- Header dell'Applicazione -->
+        <header class="bg-blue-900 text-white py-4 px-4 shadow-md flex justify-between items-center z-40 select-none">
+            <div class="flex items-center space-x-2">
+                <div class="bg-blue-600 p-2 rounded-lg">
+                    <i class="fas fa-shield-halved text-white text-lg"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-base leading-tight">CdV Sicurezza</h1>
+                    <span class="text-[10px] text-blue-200 uppercase tracking-widest font-semibold">Quartiere Attivo</span>
+                </div>
+            </div>
+            <!-- Indicatore Connessione Real-time -->
+            <div id="connection-status" class="flex items-center space-x-1 bg-amber-500/20 text-amber-300 text-[10px] px-2 py-1 rounded-full border border-amber-500/30">
+                <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                <span>Inizializzazione...</span>
+            </div>
+        </header>
+
+        <!-- AREA NOTIFICHE PUSH IN-APP (Sopra tutto) - Inizia nascosto per sicurezza -->
+        <div id="push-notification-banner" class="absolute top-14 left-4 right-4 bg-red-600 text-white p-4 rounded-xl shadow-2xl z-50 transform -translate-y-96 transition-transform duration-500 ease-out flex items-start space-x-3 border-2 border-red-400 hidden">
+            <div class="bg-white text-red-600 p-2 rounded-full animate-bounce">
+                <i class="fas fa-bullhorn text-lg"></i>
+            </div>
+            <div class="flex-1">
+                <div class="flex justify-between items-center">
+                    <span class="font-black text-sm tracking-wide uppercase">⚠️ ALLERTA IN CORSO</span>
+                    <button id="close-notification" class="text-white hover:text-red-200 p-1 focus:outline-none">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <p id="push-notification-msg" class="text-xs mt-1 font-medium">È stata appena segnalata un'emergenza nel quartiere!</p>
+                <div class="mt-2 text-[10px] text-red-200 flex justify-between">
+                    <span id="push-notification-time">Adesso</span>
+                    <button class="underline cursor-pointer font-bold text-left bg-transparent border-0 text-red-100 focus:outline-none" onclick="window.switchTab('bacheca')">Vedi dettagli</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Contenuto Principale con Scroll indipendente (Adattato a non scrollare in Home) -->
+        <main class="flex-1 overflow-y-auto pb-24 relative bg-slate-50 no-scrollbar flex flex-col">
+
+            <!-- SCHERMATA: HOME (PANICO) - Ottimizzata per distribuire lo spazio ed essere elegante senza scroll -->
+            <section id="tab-home" class="tab-content flex-1 p-5 flex flex-col justify-between">
+                
+                <!-- Box Benvenuto Slim -->
+                <div class="bg-gradient-to-r from-blue-800 to-indigo-900 text-white rounded-2xl p-4 shadow-sm flex items-center justify-between">
+                    <div>
+                        <h2 class="text-sm font-bold">Ciao, <span id="welcome-user">Residente</span> 👋</h2>
+                        <p class="text-[10px] text-blue-100 mt-0.5">Rete attiva di controllo e protezione vicinato.</p>
+                    </div>
+                    <i class="fas fa-user-shield text-blue-300 text-xl opacity-80"></i>
+                </div>
+
+                <!-- SEZIONE EMERGENZA CON PIÙ RESPIRAZIONE (Centrata in altezza) -->
+                <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 text-center flex flex-col items-center justify-center space-y-4 py-6 my-auto">
+                    <div class="inline-flex p-2.5 bg-red-100 text-red-600 rounded-full">
+                        <i class="fas fa-car-burst text-xl"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-slate-800 text-xs uppercase tracking-wider">SEGNALAZIONE IMMEDIATA</h3>
+                        <p class="text-[10px] text-slate-500 mt-1 max-w-xs">Usa questo pulsante SOLO in caso di furto d'auto in corso. Invierà un'allerta immediata a tutti i residenti.</p>
+                    </div>
+
+                    <!-- Pulsantone di Panico Distanziato e Centrato -->
+                    <div class="py-2 flex justify-center">
+                        <button id="btn-panic-theft" class="w-32 h-32 rounded-full bg-red-600 text-white flex flex-col justify-center items-center font-bold text-center border-4 border-red-100 shadow-md cursor-pointer transform transition active:scale-95 pulse-btn focus:outline-none">
+                            <i class="fas fa-exclamation-triangle text-2xl mb-1"></i>
+                            <span class="text-xs uppercase tracking-wider font-extrabold">FURTO AUTO</span>
+                            <span class="text-[8px] opacity-75 mt-0.5">PREMI QUI</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Ultime Info Rapide (Interattive e Cliccabili) con Distanziamento Spinto in Basso -->
+                <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 mt-auto">
+                    <h4 class="font-bold text-[10px] text-slate-600 uppercase tracking-wider mb-3">Segnalazioni Attive (Clicca per filtrare)</h4>
+                    <div class="grid grid-cols-2 gap-3 text-center">
+                        <div onclick="window.switchTabWithFilter('bacheca', 'urgent')" class="bg-red-50 p-3 rounded-xl border border-red-100 cursor-pointer hover:bg-red-100/75 transition duration-150 group">
+                            <span class="block text-lg font-black text-red-600 group-hover:scale-110 transition duration-150" id="stat-urgent">0</span>
+                            <span class="text-[9px] text-red-500 font-bold uppercase tracking-wide">Emergenze</span>
+                        </div>
+                        <div onclick="window.switchTabWithFilter('bacheca', 'normal')" class="bg-amber-50 p-3 rounded-xl border border-amber-100 cursor-pointer hover:bg-amber-100/75 transition duration-150 group">
+                            <span class="block text-lg font-black text-amber-600 group-hover:scale-110 transition duration-150" id="stat-normal">0</span>
+                            <span class="text-[9px] text-amber-500 font-bold uppercase tracking-wide">Altre Info</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SCHERMATA: SEGNALAZIONE GENERICA (NON URGENTE) -->
+            <section id="tab-segnala" class="tab-content p-5 space-y-5 hidden">
+                <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
+                    <h2 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                        <i class="fas fa-pen-to-square text-blue-600"></i>
+                        Nuova Segnalazione
+                    </h2>
+                    <p class="text-[11px] text-slate-500 mt-1 mb-4">Invia un avviso non urgente per informare il quartiere riguardo situazioni anomale o disservizi.</p>
+
+                    <form id="generic-report-form" class="space-y-4">
+                        <!-- Scelta Categoria -->
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-700 uppercase mb-2">Categoria</label>
+                            <div class="grid grid-cols-2 gap-2">
+                                <label class="border-2 border-slate-200 rounded-xl p-2.5 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition hover:border-blue-500 [&:has(input:checked)]:border-blue-600 [&:has(input:checked)]:bg-blue-50/50">
+                                    <input type="radio" name="category" value="Sospetto" checked class="sr-only">
+                                    <i class="fas fa-user-secret text-slate-600 text-base"></i>
+                                    <span class="text-[10px] font-bold">Attività Sospetta</span>
+                                </label>
+                                <label class="border-2 border-slate-200 rounded-xl p-2.5 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition hover:border-blue-500 [&:has(input:checked)]:border-blue-600 [&:has(input:checked)]:bg-blue-50/50">
+                                    <input type="radio" name="category" value="Vandalismo" class="sr-only">
+                                    <i class="fas fa-spray-can text-slate-600 text-base"></i>
+                                    <span class="text-[10px] font-bold">Atto Vandalico</span>
+                                </label>
+                                <label class="border-2 border-slate-200 rounded-xl p-2.5 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition hover:border-blue-500 [&:has(input:checked)]:border-blue-600 [&:has(input:checked)]:bg-blue-50/50">
+                                    <input type="radio" name="category" value="Disservizio" class="sr-only">
+                                    <i class="fas fa-lightbulb text-slate-600 text-base"></i>
+                                    <span class="text-[10px] font-bold">Disservizio/Buio</span>
+                                </label>
+                                <label class="border-2 border-slate-200 rounded-xl p-2.5 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition hover:border-blue-500 [&:has(input:checked)]:border-blue-600 [&:has(input:checked)]:bg-blue-50/50">
+                                    <input type="radio" name="category" value="Altro" class="sr-only">
+                                    <i class="fas fa-circle-info text-slate-600 text-base"></i>
+                                    <span class="text-[10px] font-bold">Altra Info</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Campi Input compilazione -->
+                        <div>
+                            <label for="report-title" class="block text-[10px] font-bold text-slate-700 uppercase mb-1">Titolo Breve</label>
+                            <input type="text" id="report-title" required placeholder="Es. Persona sospetta vicino cancello" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition">
+                        </div>
+
+                        <div>
+                            <label for="report-location" class="block text-[10px] font-bold text-slate-700 uppercase mb-1">Via / Zona</label>
+                            <input type="text" id="report-location" required placeholder="Es. Via Garibaldi, altezza civico 12" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition">
+                        </div>
+
+                        <div>
+                            <label for="report-details" class="block text-[10px] font-bold text-slate-700 uppercase mb-1">Dettagli</label>
+                            <textarea id="report-details" rows="2.5" required placeholder="Fornisci dettagli utili (modello auto, indumenti, orario...)" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"></textarea>
+                        </div>
+
+                        <!-- Bottone di invio -->
+                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-3 rounded-xl shadow-md transition flex justify-center items-center space-x-2">
+                            <i class="fas fa-paper-plane"></i>
+                            <span>Invia Segnalazione</span>
+                        </button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- SCHERMATA: BACHECA FEED DEL QUARTIERE -->
+            <section id="tab-bacheca" class="tab-content p-5 space-y-4 hidden">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h2 class="text-base font-bold text-slate-800">Bacheca Segnalazioni</h2>
+                        <p class="text-[10px] text-slate-500">Cronologia degli avvisi dei residenti</p>
+                    </div>
+                    <select id="filter-reports" class="text-[10px] bg-white border border-slate-200 rounded-lg px-2 py-1.5 font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                        <option value="all">Tutti gli avvisi</option>
+                        <option value="urgent">Emergenze</option>
+                        <option value="normal">Segnalazioni</option>
+                    </select>
+                </div>
+
+                <div id="reports-container" class="space-y-3.5">
+                    <!-- Dinamico -->
+                </div>
+            </section>
+
+            <!-- SCHERMATA: PROFILO / CONFIGURAZIONE -->
+            <section id="tab-profilo" class="tab-content p-5 space-y-5 hidden">
+                <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
+                    <h2 class="text-base font-bold text-slate-800 mb-1">Il Tuo Profilo</h2>
+                    <p class="text-[10px] text-slate-500 mb-4">Questi dati verranno associati alle segnalazioni che effettuerai.</p>
+
+                    <div class="space-y-4">
+                        <div>
+                            <label for="profile-name" class="block text-[10px] font-bold text-slate-700 uppercase mb-1">Nome o Alias</label>
+                            <input type="text" id="profile-name" placeholder="Es. Giose C." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition">
+                        </div>
+                        <div>
+                            <label for="profile-zone" class="block text-[10px] font-bold text-slate-700 uppercase mb-1">La tua Via / Zona</label>
+                            <input type="text" id="profile-zone" placeholder="Es. Via Roma" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition">
+                        </div>
+                        <button id="save-profile" class="w-full bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold py-2.5 rounded-xl shadow-sm transition">
+                            Salva Profilo
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Consigli di Sicurezza -->
+                <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 space-y-3">
+                    <h3 class="font-bold text-slate-800 text-xs uppercase tracking-wider">Linea Guida CdV</h3>
+                    <p class="text-[11px] text-slate-600 leading-relaxed">
+                        Il sistema invia le notifiche push in tempo reale tramite cloud asincrono. Consigliamo di mantenere attivo il volume del telefono per ascoltare i suoni d'emergenza.
+                    </p>
+                    <div class="border-t border-slate-100 pt-2.5">
+                        <span class="text-[10px] font-bold text-blue-950 block mb-1">Regole d'oro:</span>
+                        <ul class="text-[10px] text-slate-600 list-disc list-inside space-y-1">
+                            <li>Controlla e valida sempre l'informazione.</li>
+                            <li>Per reati e aggressioni chiama subito il <strong>112</strong>.</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- MENU DI NAVIGAZIONE INFERIORE (Z-INDEX Massimo per non essere bloccato) -->
+        <nav class="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 h-20 flex justify-around items-center px-4 shadow-lg z-50 select-none">
+            <button id="nav-home" onclick="window.switchTab('home')" class="flex flex-col items-center justify-center w-16 h-12 text-blue-600 transition focus:outline-none cursor-pointer">
+                <i class="fas fa-home text-base"></i>
+                <span class="text-[9px] font-bold mt-1">Emergenza</span>
+            </button>
+            <button id="nav-segnala" onclick="window.switchTab('segnala')" class="flex flex-col items-center justify-center w-16 h-12 text-slate-400 transition focus:outline-none cursor-pointer">
+                <i class="fas fa-circle-plus text-base"></i>
+                <span class="text-[9px] font-bold mt-1">Segnala</span>
+            </button>
+            <button id="nav-bacheca" onclick="window.switchTab('bacheca')" class="flex flex-col items-center justify-center w-16 h-12 text-slate-400 relative transition focus:outline-none cursor-pointer">
+                <i class="fas fa-list text-base"></i>
+                <span class="text-[9px] font-bold mt-1">Bacheca</span>
+                <span id="badge-unread" class="absolute top-0.5 right-2.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white hidden"></span>
+            </button>
+            <button id="nav-profilo" onclick="window.switchTab('profilo')" class="flex flex-col items-center justify-center w-16 h-12 text-slate-400 transition focus:outline-none cursor-pointer">
+                <i class="fas fa-user-shield text-base"></i>
+                <span class="text-[9px] font-bold mt-1">Profilo</span>
+            </button>
+        </nav>
+
+        <!-- POPUP DI CONFERMA: EMERGENZA FURTO AUTO -->
+        <div id="panic-confirm-modal" class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex justify-center items-end z-50 hidden p-4">
+            <div class="bg-white w-full rounded-3xl p-6 space-y-5 shadow-2xl transform translate-y-full transition-transform duration-300 ease-out">
+                <div class="text-center space-y-2">
+                    <div class="inline-flex p-3 bg-red-100 text-red-600 rounded-full animate-pulse">
+                        <i class="fas fa-car-burst text-2xl"></i>
+                    </div>
+                    <h3 class="text-base font-extrabold text-slate-900">Confermi il furto d'auto?</h3>
+                    <p class="text-xs text-slate-500">Invierai una <strong>notifica istantanea acustica</strong> a tutti i residenti del quartiere. Usa con responsabilità.</p>
+                </div>
+
+                <div class="space-y-3">
+                    <div>
+                        <label for="panic-details" class="block text-left text-[10px] font-bold text-slate-700 uppercase mb-1">Dettagli auto (Modello, colore, targa)</label>
+                        <input type="text" id="panic-details" placeholder="Es: Panda Bianca, targa XY456ZZ" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-500 focus:bg-white transition">
+                    </div>
+                    <div>
+                        <label for="panic-location" class="block text-left text-[10px] font-bold text-slate-700 uppercase mb-1">Ultima posizione nota</label>
+                        <input type="text" id="panic-location" placeholder="Es: Via Amendola" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-500 focus:bg-white transition">
+                    </div>
+                </div>
+
+                <div class="flex flex-col space-y-2">
+                    <button id="confirm-panic-btn" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl shadow-lg transition uppercase tracking-wider text-xs focus:outline-none">
+                        Sì, lancia allarme generale!
+                    </button>
+                    <button id="cancel-panic-btn" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl transition text-xs focus:outline-none">
+                        Annulla
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- NOTIFICA INTERNA SUCCESS (TOAST) - pointer-events-none previene l'intercettazione accidentale di click -->
+        <div id="toast" class="pointer-events-none absolute bottom-24 left-4 right-4 bg-slate-900/95 text-white text-xs px-4 py-3 rounded-xl shadow-lg z-50 flex items-center space-x-2 transform translate-y-20 opacity-0 transition-all duration-300">
+            <i class="fas fa-circle-check text-green-400 text-base"></i>
+            <span id="toast-text" class="font-medium">Allineamento riuscito!</span>
+        </div>
+
+    </div>
+
+    <!-- LOGICA DI CONTROLLO INTERFACCIA -->
+    <script>
+        // Stato Applicazione locale
+        window.state = {
+            currentUser: {
+                name: "Residente Anonimo",
+                zone: "Zona Quartiere"
+            },
+            reports: [],
+            isOnline: false,
+            seenReportIds: new Set() // Registro degli ID visti per silenziare le notifiche del passato
+        };
+
+        // Funzione Navigazione tra le Tab
+        window.switchTab = function(tabId) {
+            const tabs = ['home', 'segnala', 'bacheca', 'profilo'];
+            
+            tabs.forEach(id => {
+                const element = document.getElementById(`tab-${id}`);
+                if (element) element.classList.add('hidden');
+                
+                const navBtn = document.getElementById(`nav-${id}`);
+                if (navBtn) {
+                    navBtn.classList.remove('text-blue-600');
+                    navBtn.classList.add('text-slate-400');
+                }
+            });
+
+            const activeTab = document.getElementById(`tab-${tabId}`);
+            if (activeTab) activeTab.classList.remove('hidden');
+            
+            const activeNav = document.getElementById(`nav-${tabId}`);
+            if (activeNav) {
+                activeNav.classList.remove('text-slate-400');
+                activeNav.classList.add('text-blue-600');
+            }
+
+            // Nascondi badge notifica non letta quando si accede alla bacheca
+            if (tabId === 'bacheca') {
+                const badge = document.getElementById('badge-unread');
+                if (badge) badge.classList.add('hidden');
+            }
+        };
+
+        // Navigazione rapida con pre-selezione filtri (utilizzato dai box in home)
+        window.switchTabWithFilter = function(tabId, filterValue) {
+            window.switchTab(tabId);
+            const filterSelect = document.getElementById('filter-reports');
+            if (filterSelect) {
+                filterSelect.value = filterValue;
+                window.renderReports();
+            }
+        };
+
+        // Riproduttore acustico sirena d'emergenza (Web Audio API)
+        window.playSirenSound = function() {
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (!audioCtx) return;
+
+                const osc1 = audioCtx.createOscillator();
+                const osc2 = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+
+                osc1.type = 'sine';
+                osc2.type = 'sawtooth';
+                
+                osc1.frequency.setValueAtTime(650, audioCtx.currentTime);
+                osc1.frequency.linearRampToValueAtTime(1100, audioCtx.currentTime + 0.5);
+                osc1.frequency.linearRampToValueAtTime(650, audioCtx.currentTime + 1.0);
+                osc1.frequency.linearRampToValueAtTime(1100, audioCtx.currentTime + 1.5);
+                osc1.frequency.linearRampToValueAtTime(650, audioCtx.currentTime + 2.0);
+
+                osc2.frequency.setValueAtTime(220, audioCtx.currentTime);
+                osc2.frequency.linearRampToValueAtTime(310, audioCtx.currentTime + 1.0);
+                osc2.frequency.linearRampToValueAtTime(220, audioCtx.currentTime + 2.0);
+
+                gain.gain.setValueAtTime(0.14, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 2.0);
+
+                osc1.connect(gain);
+                osc2.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc1.start();
+                osc2.start();
+                
+                osc1.stop(audioCtx.currentTime + 2.0);
+                osc2.stop(audioCtx.currentTime + 2.0);
+            } catch (e) {
+                console.log("Riproduzione audio silenziata in attesa di interazione utente.");
+            }
+        };
+
+        // Lancio visivo della notifica Push interna (In-App)
+        window.triggerPushNotification = function(report) {
+            const banner = document.getElementById('push-notification-banner');
+            const msg = document.getElementById('push-notification-msg');
+            const time = document.getElementById('push-notification-time');
+            
+            if (banner && msg && time) {
+                msg.innerHTML = `<strong>${report.reporterName}</strong> segnala furto auto: <strong>${report.title}</strong> a <strong>${report.location}</strong>. Controllare!`;
+                time.innerText = new Date(report.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                
+                window.playSirenSound();
+                banner.classList.remove('hidden');
+                
+                setTimeout(() => {
+                    banner.classList.remove('-translate-y-96');
+                }, 50);
+                
+                const badge = document.getElementById('badge-unread');
+                if (badge) badge.classList.remove('hidden');
+
+                // Autochiusura temporizzata
+                setTimeout(() => {
+                    banner.classList.add('-translate-y-96');
+                    setTimeout(() => {
+                        banner.classList.add('hidden');
+                    }, 500);
+                }, 7500);
+            }
+        };
+
+        // Renderizzatore Lista Segnalazioni nella tab Bacheca
+        window.renderReports = function() {
+            const container = document.getElementById('reports-container');
+            if (!container) return;
+
+            const filterSelect = document.getElementById('filter-reports');
+            const filter = filterSelect ? filterSelect.value : 'all';
+            let filtered = window.state.reports;
+            
+            if (filter === 'urgent') {
+                filtered = window.state.reports.filter(r => r.isUrgent);
+            } else if (filter === 'normal') {
+                filtered = window.state.reports.filter(r => !r.isUrgent);
+            }
+
+            // Aggiornamento contatori home in tempo reale
+            const urgentCount = window.state.reports.filter(r => r.isUrgent).length;
+            const normalCount = window.state.reports.filter(r => !r.isUrgent).length;
+            
+            const statUrgent = document.getElementById('stat-urgent');
+            const statNormal = document.getElementById('stat-normal');
+            if (statUrgent) statUrgent.innerText = urgentCount;
+            if (statNormal) statNormal.innerText = normalCount;
+
+            if (filtered.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-12 text-slate-400 bg-white rounded-2xl border border-slate-200">
+                        <i class="fas fa-folder-open text-3xl mb-3 block"></i>
+                        <p class="text-xs">Nessuna segnalazione trovata</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = filtered.map(report => {
+                const dateStr = new Date(report.timestamp).toLocaleString('it-IT', {
+                    day: '2-digit',
+                    month: 'short',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+
+                if (report.isUrgent) {
+                    return `
+                        <div class="bg-gradient-to-br from-red-50 to-red-100 border-2 border-red-500 rounded-2xl p-4 shadow-sm space-y-3 relative overflow-hidden">
+                            <div class="absolute right-3 top-3 bg-red-600 text-white text-[9px] uppercase font-black px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
+                                <span class="w-1 h-1 bg-white rounded-full animate-ping"></span> Emergenza
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <div class="bg-red-600 text-white p-2 rounded-xl">
+                                    <i class="fas fa-car-burst text-sm"></i>
+                                </div>
+                                <div>
+                                    <span class="text-[9px] font-bold text-red-800 tracking-wider block uppercase">FURTO AUTO</span>
+                                    <h3 class="font-extrabold text-slate-950 text-sm leading-tight mt-0.5">${report.title}</h3>
+                                </div>
+                            </div>
+                            <div class="space-y-1 text-xs">
+                                <p class="text-slate-800"><span class="font-bold text-slate-900"><i class="fas fa-map-marker-alt text-red-600 mr-1"></i> Posizione:</span> ${report.location}</p>
+                            </div>
+                            <div class="flex justify-between items-center pt-2 border-t border-red-200 text-[9px] text-slate-600">
+                                <span>Segnalato da: <strong>${report.reporterName}</strong></span>
+                                <span class="font-medium">${dateStr}</span>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    let catIcon = "fa-circle-info";
+                    let catBg = "bg-slate-100 text-slate-700";
+                    if (report.category === "Sospetto") { catIcon = "fa-user-secret"; catBg = "bg-amber-100 text-amber-700"; }
+                    else if (report.category === "Vandalismo") { catIcon = "fa-spray-can"; catBg = "bg-purple-100 text-purple-700"; }
+                    else if (report.category === "Disservizio") { catIcon = "fa-lightbulb"; catBg = "bg-cyan-100 text-cyan-700"; }
+
+                    return `
+                        <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm space-y-2.5">
+                            <div class="flex items-center space-x-2">
+                                <div class="${catBg} p-2 rounded-lg">
+                                    <i class="fas ${catIcon} text-xs"></i>
+                                </div>
+                                <div>
+                                    <span class="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">${report.category}</span>
+                                    <h3 class="font-bold text-slate-900 text-xs mt-0.5">${report.title}</h3>
+                                </div>
+                            </div>
+                            <div class="space-y-1 text-xs text-slate-600">
+                                <p><span class="font-semibold text-slate-800"><i class="fas fa-location-arrow text-slate-400 mr-1"></i> Zona:</span> ${report.location}</p>
+                                <p class="text-slate-500 mt-1">${report.details}</p>
+                            </div>
+                            <div class="flex justify-between items-center pt-2 border-t border-slate-100 text-[9px] text-slate-400">
+                                <span>Segnalato da: <strong>${report.reporterName}</strong></span>
+                                <span>${dateStr}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+            }).join('');
+        };
+
+        // Messaggio a scomparsa Toast
+        window.showToast = function(text) {
+            const toast = document.getElementById('toast');
+            const toastText = document.getElementById('toast-text');
+            if (toast && toastText) {
+                toastText.innerText = text;
+                toast.classList.remove('pointer-events-none', 'translate-y-20', 'opacity-0');
+                setTimeout(() => {
+                    toast.classList.add('pointer-events-none', 'translate-y-20', 'opacity-0');
+                }, 3500);
+            }
+        };
+
+        // Gestori eventi dell'interfaccia
+        const initUIListeners = () => {
+            // Aggiorna orologio virtuale
+            const checkClock = () => {
+                const el = document.getElementById('virtual-clock');
+                if (el) el.innerText = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            };
+            setInterval(checkClock, 30000);
+            checkClock();
+
+            // Apri modal d'allerta
+            const btnPanic = document.getElementById('btn-panic-theft');
+            if (btnPanic) {
+                btnPanic.addEventListener('click', () => {
+                    const modal = document.getElementById('panic-confirm-modal');
+                    if (modal) {
+                        modal.classList.remove('hidden');
+                        setTimeout(() => modal.querySelector('div').classList.remove('translate-y-full'), 50);
+                    }
+                });
+            }
+
+            // Chiudi modal d'allerta
+            const btnCancel = document.getElementById('cancel-panic-btn');
+            if (btnCancel) {
+                btnCancel.addEventListener('click', () => {
+                    const modal = document.getElementById('panic-confirm-modal');
+                    if (modal) {
+                        modal.querySelector('div').classList.add('translate-y-full');
+                        setTimeout(() => modal.classList.add('hidden'), 300);
+                    }
+                });
+            }
+
+            // Conferma invio emergenza furto d'auto
+            const btnConfirm = document.getElementById('confirm-panic-btn');
+            if (btnConfirm) {
+                btnConfirm.addEventListener('click', () => {
+                    const detailsInput = document.getElementById('panic-details');
+                    const locationInput = document.getElementById('panic-location');
+
+                    const reportData = {
+                        category: 'Furto Auto',
+                        title: (detailsInput && detailsInput.value.trim()) ? detailsInput.value.trim() : 'Veicolo Rubato',
+                        location: (locationInput && locationInput.value.trim()) ? locationInput.value.trim() : 'Posizione sconosciuta',
+                        details: 'Allarme immediato furto d\'auto attivato da un residente.',
+                        isUrgent: true,
+                        reporterName: window.state.currentUser.name,
+                        reporterZone: window.state.currentUser.zone,
+                        timestamp: Date.now()
+                    };
+
+                    window.publishReport(reportData);
+
+                    // Chiudi e pulisci
+                    const modal = document.getElementById('panic-confirm-modal');
+                    if (modal) {
+                        modal.querySelector('div').classList.add('translate-y-full');
+                        setTimeout(() => modal.classList.add('hidden'), 300);
+                    }
+                    if (detailsInput) detailsInput.value = '';
+                    if (locationInput) locationInput.value = '';
+                });
+            }
+
+            // Form Segnalazione Generica
+            const formSegnala = document.getElementById('generic-report-form');
+            if (formSegnala) {
+                formSegnala.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    
+                    const checkedCategory = document.querySelector('input[name="category"]:checked');
+                    const title = document.getElementById('report-title');
+                    const location = document.getElementById('report-location');
+                    const details = document.getElementById('report-details');
+
+                    const reportData = {
+                        category: checkedCategory ? checkedCategory.value : 'Altro',
+                        title: title ? title.value.trim() : 'Segnalazione',
+                        location: location ? location.value.trim() : 'Zona quartiere',
+                        details: details ? details.value.trim() : '',
+                        isUrgent: false,
+                        reporterName: window.state.currentUser.name,
+                        reporterZone: window.state.currentUser.zone,
+                        timestamp: Date.now()
+                    };
+
+                    window.publishReport(reportData);
+                    if (formSegnala) formSegnala.reset();
+                    window.switchTab('bacheca');
+                });
+            }
+
+            // Listener per il selettore filtri in bacheca
+            const filterEl = document.getElementById('filter-reports');
+            if (filterEl) filterEl.addEventListener('change', window.renderReports);
+
+            // Chiudi manualmente notifica push in-app
+            const closeNotif = document.getElementById('close-notification');
+            if (closeNotif) {
+                closeNotif.addEventListener('click', () => {
+                    const banner = document.getElementById('push-notification-banner');
+                    if (banner) {
+                        banner.classList.add('-translate-y-96');
+                        setTimeout(() => banner.classList.add('hidden'), 500);
+                    }
+                });
+            }
+
+            // Salva Profilo Utente
+            const btnSave = document.getElementById('save-profile');
+            if (btnSave) {
+                btnSave.addEventListener('click', () => {
+                    const name = document.getElementById('profile-name');
+                    const zone = document.getElementById('profile-zone');
+
+                    const nameVal = name ? name.value.trim() : "Residente Anonimo";
+                    const zoneVal = zone ? zone.value.trim() : "Zona Quartiere";
+
+                    window.state.currentUser.name = nameVal;
+                    window.state.currentUser.zone = zoneVal;
+
+                    localStorage.setItem('cdv_profile_name', nameVal);
+                    localStorage.setItem('cdv_profile_zone', zoneVal);
+
+                    const welcomeEl = document.getElementById('welcome-user');
+                    if (welcomeEl) welcomeEl.innerText = nameVal;
+
+                    window.showToast("✅ Profilo salvato correttamente!");
+                });
+            }
+        };
+
+        // Caricamento del profilo locale memorizzato
+        const loadProfileSettings = () => {
+            const savedName = localStorage.getItem('cdv_profile_name');
+            const savedZone = localStorage.getItem('cdv_profile_zone');
+            
+            if (savedName) window.state.currentUser.name = savedName;
+            if (savedZone) window.state.currentUser.zone = savedZone;
+
+            const nameInput = document.getElementById('profile-name');
+            const zoneInput = document.getElementById('profile-zone');
+            const welcomeEl = document.getElementById('welcome-user');
+
+            if (nameInput) nameInput.value = window.state.currentUser.name;
+            if (zoneInput) zoneInput.value = window.state.currentUser.zone;
+            if (welcomeEl) welcomeEl.innerText = window.state.currentUser.name;
+        };
+
+        // Caricamento segnalazioni demo offline
+        const loadMockReports = () => {
+            window.state.reports = [
+                {
+                    id: 'demo-1',
+                    category: 'Sospetto',
+                    title: 'Furgone bianco sospetto',
+                    location: 'Via dei Gelsomini, incrocio via Roma',
+                    details: 'Procede lentamente guardando all\'interno dei cancelli delle abitazioni private.',
+                    reporterName: 'Giovanni B.',
+                    reporterZone: 'Via dei Gelsomini',
+                    timestamp: Date.now() - 3600000,
+                    isUrgent: false
+                },
+                {
+                    id: 'demo-2',
+                    category: 'Disservizio',
+                    title: 'Lampione spento',
+                    location: 'Piazza della Libertà, lato Ovest',
+                    details: 'Zona giochi al buio completo, necessario ripristino lampioni comunali.',
+                    reporterName: 'Sara M.',
+                    reporterZone: 'Piazza Libertà',
+                    timestamp: Date.now() - 7200000,
+                    isUrgent: false
+                }
+            ];
+            
+            // Popola il registro degli ID visti inizialmente per non notificare segnalazioni storiche
+            window.state.reports.forEach(r => {
+                window.state.seenReportIds.add(r.id);
+            });
+
+            window.renderReports();
+        };
+
+        // Avvio dell'app
+        const startApp = () => {
+            loadProfileSettings();
+            loadMockReports();
+            initUIListeners();
+            
+            // Configura stato connessione locale
+            const el = document.getElementById('connection-status');
+            if (el) {
+                el.innerHTML = `<span class="w-2 h-2 rounded-full bg-indigo-400"></span><span>Simulata (Locale)</span>`;
+                el.className = "flex items-center space-x-1 bg-indigo-500/20 text-indigo-300 text-[10px] px-2 py-1 rounded-full border border-indigo-500/30";
+            }
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startApp);
+        } else {
+            startApp();
+        }
+    </script>
+
+    <!-- LOGICA DI RETE & SINCRONIZZAZIONE REAL-TIME -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getFirestore, collection, addDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+        let app, auth, db, appId;
+        let isFirebaseActive = false;
+
+        const setCloudConnectionStatus = (active) => {
+            const el = document.getElementById('connection-status');
+            if (!el) return;
+            if (active) {
+                el.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span><span>Cloud Attivo</span>`;
+                el.className = "flex items-center space-x-1 bg-emerald-500/20 text-emerald-300 text-[10px] px-2 py-1 rounded-full border border-emerald-500/30";
+            } else {
+                el.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400"></span><span>Offline (Simulata)</span>`;
+                el.className = "flex items-center space-x-1 bg-amber-500/20 text-amber-300 text-[10px] px-2 py-1 rounded-full border border-amber-500/30";
+            }
+        };
+
+        // Spedisce la segnalazione (Firebase Cloud o Simulazione locale asincrona)
+        window.publishReport = async (reportData) => {
+            if (!isFirebaseActive) {
+                // Simulazione Offline
+                const localId = 'local-' + Date.now();
+                const localReport = {
+                    id: localId,
+                    ...reportData,
+                    timestamp: Date.now()
+                };
+
+                window.state.reports.unshift(localReport);
+                window.renderReports();
+
+                window.showToast(localReport.isUrgent ? "🚨 Emergenza condivisa con il vicinato!" : "✅ Segnalazione inserita correttamente!");
+
+                // Se l'allarme è urgente, triggera la notifica push locale immediata
+                if (localReport.isUrgent) {
+                    window.state.seenReportIds.add(localId); // Impediamo doppi squilli
+                    setTimeout(() => {
+                        window.triggerPushNotification(localReport);
+                    }, 200);
+                }
+                return;
+            }
+
+            try {
+                const publicReportsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+                await addDoc(publicReportsCollection, {
+                    ...reportData,
+                    timestamp: Date.now()
+                });
+                window.showToast(reportData.isUrgent ? "🚨 Emergenza inviata al server cloud!" : "✅ Segnalazione inviata in Cloud!");
+            } catch (err) {
+                console.error("Errore salvataggio server:", err);
+                window.showToast("❌ Errore d'invio al server, salvataggio locale.");
+            }
+        };
+
+        // Ascolto real-time asincrono di tutti gli eventi nel cloud
+        const startRealtimeSync = () => {
+            if (!db || !appId) return;
+
+            const publicReportsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+
+            onSnapshot(publicReportsCollection, (snapshot) => {
+                const fetchedReports = [];
+                snapshot.forEach((doc) => {
+                    fetchedReports.push({ id: doc.id, ...doc.data() });
+                });
+
+                // Ordinamento in locale
+                fetchedReports.sort((a, b) => b.timestamp - a.timestamp);
+
+                // Primo caricamento: popola gli ID esistenti nel registro senza notificare
+                if (window.state.seenReportIds.size === 0) {
+                    fetchedReports.forEach(r => window.state.seenReportIds.add(r.id));
+                } else {
+                    // Controlla se ci sono nuove emergenze urgenti non ancora viste da questo dispositivo
+                    const latest = fetchedReports[0];
+                    if (latest && latest.isUrgent && !window.state.seenReportIds.has(latest.id)) {
+                        window.state.seenReportIds.add(latest.id);
+                        window.triggerPushNotification(latest);
+                    }
+                }
+
+                window.state.reports = fetchedReports;
+                window.renderReports();
+            }, (error) => {
+                console.error("Sincronizzazione realtime interrotta:", error);
+            });
+        };
+
+        const initCloudSetup = async () => {
+            try {
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'neighborhood-watch-app';
+                
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    const firebaseConfig = JSON.parse(__firebase_config);
+                    app = initializeApp(firebaseConfig);
+                    auth = getAuth(app);
+                    db = getFirestore(app);
+
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    onAuthStateChanged(auth, (user) => {
+                        if (user) {
+                            isFirebaseActive = true;
+                            setCloudConnectionStatus(true);
+                            startRealtimeSync();
+                        } else {
+                            isFirebaseActive = false;
+                            setCloudConnectionStatus(false);
+                        }
+                    });
+                }
+            } catch (err) {
+                console.warn("Avvio in modalità database simulato locale.", err);
+                isFirebaseActive = false;
+                setCloudConnectionStatus(false);
+            }
+        };
+
+        // Esegui setup di connessione
+        initCloudSetup();
+    </script>
+</body>
+</html>
